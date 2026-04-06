@@ -51,7 +51,7 @@ class CNNEncoder(nn.Module):
     def __init__(self, channels: list[int], dropout: float = 0.3):
         super().__init__()
         layers = []
-        
+
         # Initial convolution
         in_c = channels[0] if channels else 32
         layers += [
@@ -60,11 +60,11 @@ class CNNEncoder(nn.Module):
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
         ]
-        
+
         for out_c in channels:
             layers.append(ResBlock(in_c, out_c, stride=2 if in_c != out_c else 1))
             in_c = out_c
-            
+
         layers.append(nn.AdaptiveAvgPool2d(1))
         layers.append(nn.Flatten())
         layers.append(nn.Dropout(dropout))
@@ -105,21 +105,12 @@ class VideoClassifier(nn.Module):
             h_out:  updated hidden state
         """
         B, T, C, H, W = x.shape
-        # Encode each frame independently, processing in chunks to limit
-        # peak GPU memory.  We avoid flattening the full (B*T, C, H, W)
-        # tensor upfront — instead we slice from the original 5-D tensor
-        # so only one chunk is live on the GPU at a time.
-        chunk_size = 64
-        features = torch.empty(B * T, self.encoder.out_dim,
-                               device=x.device, dtype=x.dtype)
-        for i in range(0, B * T, chunk_size):
-            end = min(i + chunk_size, B * T)
-            # Slice from original tensor to avoid a full B*T copy
-            batch_idx = torch.arange(i, end, device=x.device)
-            b_idx = batch_idx // T
-            t_idx = batch_idx % T
-            features[i:end] = self.encoder(x[b_idx, t_idx])
-        features = features.reshape(B, T, -1)            # (B, T, feat_dim)
+
+        # Reshape to (B*T, C, H, W) — this is a view (no copy) on a
+        # contiguous tensor, much faster than the previous advanced-indexing
+        # chunked approach.
+        features = self.encoder(x.reshape(B * T, C, H, W))  # (B*T, feat_dim)
+        features = features.reshape(B, T, -1)                # (B, T, feat_dim)
 
         # Temporal modelling
         gru_out, h_out = self.gru(features, h)           # (B, T, gru_hidden)

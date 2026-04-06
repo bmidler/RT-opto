@@ -76,23 +76,9 @@ def get_video_info(video_path: str | Path) -> tuple[float, int, int]:
     return fps, h, w
 
 
-def compute_output_size(h: int, w: int, max_dimension: int | None) -> tuple[int, int]:
-    """Return (out_h, out_w) after optional aspect-ratio-preserving downscale."""
-    if max_dimension is None or max(h, w) <= max_dimension:
-        return h, w
-    scale = max_dimension / max(h, w)
-    out_h = int(round(h * scale / 2)) * 2
-    out_w = int(round(w * scale / 2)) * 2
-    return out_h, out_w
-
-
-def preprocess_frame(frame_bgr: np.ndarray,
-                     out_h: int, out_w: int,
-                     native_h: int, native_w: int) -> np.ndarray:
-    """BGR frame -> normalised float32 grayscale, resized only if needed."""
+def preprocess_frame(frame_bgr: np.ndarray) -> np.ndarray:
+    """BGR frame -> normalised float32 grayscale (native resolution)."""
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-    if out_h != native_h or out_w != native_w:
-        gray = cv2.resize(gray, (out_w, out_h), interpolation=cv2.INTER_AREA)
     return gray.astype(np.float32) / 255.0
 
 
@@ -100,16 +86,15 @@ def preprocess_frame(frame_bgr: np.ndarray,
 # One-time video -> memmap extraction
 # ---------------------------------------------------------------------------
 
-def _cache_key(video_path: Path, max_dimension: int | None) -> str:
+def _cache_key(video_path: Path) -> str:
     """Deterministic short hash so we can tell if a cache is still valid."""
-    raw = f"{video_path.resolve()}|{max_dimension}"
+    raw = f"{video_path.resolve()}"
     return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
-def _mmap_path_for(video_path: Path, cache_dir: Path,
-                   max_dimension: int | None) -> Path:
+def _mmap_path_for(video_path: Path, cache_dir: Path) -> Path:
     """Return the expected cache file path for a given video."""
-    return cache_dir / f"{_cache_key(video_path, max_dimension)}.npy"
+    return cache_dir / f"{_cache_key(video_path)}.npy"
 
 
 def _decode_worker(
@@ -119,7 +104,6 @@ def _decode_worker(
     out_h: int,
     out_w: int,
     cache_dir_str: str,
-    max_dimension: int | None,
 ) -> tuple[str, str, int, int, int]:
     """Worker function for parallel decoding (runs in a subprocess).
 
@@ -130,7 +114,7 @@ def _decode_worker(
     video_path = Path(video_path_str)
     cache_dir = Path(cache_dir_str)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    mmap_path = _mmap_path_for(video_path, cache_dir, max_dimension)
+    mmap_path = _mmap_path_for(video_path, cache_dir)
 
     if mmap_path.exists():
         return (sess_name, str(mmap_path), n_frames, out_h, out_w)
@@ -139,9 +123,6 @@ def _decode_worker(
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {video_path}")
 
-    native_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    native_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-
     mmap = np.memmap(str(mmap_path), dtype=np.float32, mode="w+",
                      shape=(n_frames, out_h, out_w))
 
@@ -149,7 +130,7 @@ def _decode_worker(
         ret, frame = cap.read()
         if not ret:
             break
-        mmap[i] = preprocess_frame(frame, out_h, out_w, native_h, native_w)
+        mmap[i] = preprocess_frame(frame)
 
     mmap.flush()
     del mmap
@@ -158,22 +139,53 @@ def _decode_worker(
 
 
 # ---------------------------------------------------------------------------
+# Data augmentation (applied per-chunk during training)
+# ---------------------------------------------------------------------------
+
+def augment_chunk(frames: torch.Tensor) -> torch.Tensor:
+    """Apply random spatial/photometric augmentations to a chunk [T, 1, H, W].
+
+    Spatial transforms are consistent across the temporal chunk so that the
+    GRU sees coherent motion.  Photometric noise is per-frame.
+    """
+    # Random horizontal flip (consistent across chunk)
+    if torch.rand(1).item() < 0.5:
+        frames = frames.flip(-1)
+
+    # Random vertical flip (consistent across chunk)
+    if torch.rand(1).item() < 0.3:
+        frames = frames.flip(-2)
+
+    # Random brightness shift
+    if torch.rand(1).item() < 0.5:
+        delta = (torch.rand(1).item() - 0.5) * 0.3  # [-0.15, +0.15]
+        frames = (frames + delta).clamp_(0.0, 1.0)
+
+    # Random contrast adjustment
+    if torch.rand(1).item() < 0.5:
+        factor = 0.7 + torch.rand(1).item() * 0.6  # [0.7, 1.3]
+        mean = frames.mean()
+        frames = ((frames - mean) * factor + mean).clamp_(0.0, 1.0)
+
+    # Per-frame Gaussian noise
+    if torch.rand(1).item() < 0.3:
+        noise = torch.randn_like(frames) * 0.02
+        frames = (frames + noise).clamp_(0.0, 1.0)
+
+    return frames
+
+
+# ---------------------------------------------------------------------------
 # Video reader (sequential, memory-efficient) — kept for evaluate.py compat
 # ---------------------------------------------------------------------------
 
 class VideoFrameReader:
-    """Iterate over grayscale frames of an mp4 at their native resolution
-    (or downscaled if max_dimension is set in cfg)."""
+    """Iterate over grayscale frames of an mp4 at their native resolution."""
 
     def __init__(self, video_path: str | Path, cfg: Config):
         self.path = str(video_path)
-        _, native_h, native_w = get_video_info(video_path)
-        self.native_h = native_h
-        self.native_w = native_w
-        self.out_h, self.out_w = compute_output_size(
-            native_h, native_w, cfg.max_dimension)
-        
-        print(f"    Native HxW: {native_h}x{native_w} → Output HxW: {self.out_h}x{self.out_w}", flush=True)
+        _, self.native_h, self.native_w = get_video_info(video_path)
+        print(f"    Native HxW: {self.native_h}x{self.native_w}", flush=True)
 
     def __iter__(self):
         cap = cv2.VideoCapture(self.path)
@@ -184,11 +196,34 @@ class VideoFrameReader:
                 ret, frame = cap.read()
                 if not ret:
                     break
-                yield preprocess_frame(
-                    frame, self.out_h, self.out_w,
-                    self.native_h, self.native_w)
+                yield preprocess_frame(frame)
         finally:
             cap.release()
+
+
+# ---------------------------------------------------------------------------
+# Class-weight computation
+# ---------------------------------------------------------------------------
+
+def compute_class_weights(labels_dict: dict[str, np.ndarray],
+                          sessions: list[str],
+                          num_classes: int) -> torch.Tensor:
+    """Compute inverse-frequency class weights for CrossEntropyLoss.
+
+    Uses the "balanced" heuristic:  weight_c = n_total / (n_classes * n_c)
+    This is the same formula used by sklearn.utils.class_weight.
+    """
+    counts = np.zeros(num_classes, dtype=np.float64)
+    for sess in sessions:
+        labels = labels_dict[sess]
+        for c in range(num_classes):
+            counts[c] += (labels == c).sum()
+
+    n_total = counts.sum()
+    # Avoid division by zero for classes absent from the training set
+    counts = np.maximum(counts, 1.0)
+    weights = n_total / (num_classes * counts)
+    return torch.tensor(weights, dtype=torch.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -211,9 +246,10 @@ class SessionChunkDataset(Dataset):
     """
 
     def __init__(self, sessions: list[str], labels_dict: dict[str, np.ndarray],
-                 video_root: str, cfg: Config):
+                 video_root: str, cfg: Config, training: bool = False):
         self.cfg = cfg
         self.labels_dict = labels_dict
+        self.training = training
 
         # Build an index: list of (session_name, start_frame)
         self.index: list[tuple[str, int]] = []
@@ -237,18 +273,16 @@ class SessionChunkDataset(Dataset):
         for sess in sessions:
             vid = find_session_video(video_root, sess)
             _, native_h, native_w = get_video_info(vid)
-            out_h, out_w = compute_output_size(
-                native_h, native_w, cfg.max_dimension)
-            self.frame_sizes[sess] = (out_h, out_w)
+            self.frame_sizes[sess] = (native_h, native_w)
 
             n_frames = len(labels_dict[sess])
             sess_meta[sess] = dict(
-                vid=vid, n_frames=n_frames, out_h=out_h, out_w=out_w)
+                vid=vid, n_frames=n_frames, out_h=native_h, out_w=native_w)
 
         # ---- Phase 2: decode videos (parallel, cached on disk) ----
         to_decode: dict[str, dict] = {}
         for sess, m in sess_meta.items():
-            mmap_path = _mmap_path_for(m["vid"], cache_dir, cfg.max_dimension)
+            mmap_path = _mmap_path_for(m["vid"], cache_dir)
             if mmap_path.exists():
                 self.mmap_meta[sess] = (
                     str(mmap_path),
@@ -269,7 +303,7 @@ class SessionChunkDataset(Dataset):
                         _decode_worker,
                         str(m["vid"]), sess, m["n_frames"],
                         m["out_h"], m["out_w"],
-                        str(cache_dir), cfg.max_dimension,
+                        str(cache_dir),
                     )
                     futures[fut] = sess
 
@@ -294,6 +328,12 @@ class SessionChunkDataset(Dataset):
         unique_sizes = set(self.frame_sizes.values())
         for sz in unique_sizes:
             print(f"  Frame size in use: {sz[0]}H x {sz[1]}W", flush=True)
+        if len(unique_sizes) > 1:
+            raise ValueError(
+                "Multiple native resolutions detected across sessions. "
+                "All videos must share the same resolution for batched "
+                "training. Found: " + ", ".join(
+                    f"{h}x{w}" for h, w in sorted(unique_sizes)))
         print(f"  Total chunks: {len(self.index)}", flush=True)
 
     # -- Lazy memmap accessor (safe across DataLoader workers) --
@@ -322,6 +362,10 @@ class SessionChunkDataset(Dataset):
 
         frames_t = torch.from_numpy(frames).unsqueeze(1)   # [T, 1, H, W]
         labels_t = torch.from_numpy(labels).long()          # [T]
+
+        if self.training:
+            frames_t = augment_chunk(frames_t)
+
         return frames_t, labels_t
 
     def __getstate__(self):

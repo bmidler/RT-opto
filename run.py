@@ -47,10 +47,6 @@ def parse_args():
     p.add_argument("--patience", type=int, default=None)
     p.add_argument("--gru_hidden", type=int, default=None)
     p.add_argument("--dropout", type=float, default=None)
-    p.add_argument("--max_dimension", type=int, default=None,
-                   help="Downscale frames so the longest side is at most this "
-                        "many pixels (aspect ratio preserved). Omit to use "
-                        "the video's native resolution.")
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--grad_accum_steps", type=int, default=None,
                    help="Gradient accumulation steps (default 4)")
@@ -76,7 +72,7 @@ def main():
         cfg.model_save_path = f"{cfg.output_dir}/best_model.pt"
 
     for field in ["lr", "batch_size", "max_epochs", "patience",
-                  "gru_hidden", "dropout", "max_dimension", "seed",
+                  "gru_hidden", "dropout", "seed",
                   "grad_accum_steps"]:
         val = getattr(args, field, None)
         if val is not None:

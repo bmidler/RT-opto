@@ -1,7 +1,7 @@
 """Configuration for the video classification pipeline."""
 
+import os
 from dataclasses import dataclass, field
-from pathlib import Path
 
 
 @dataclass
@@ -14,11 +14,6 @@ class Config:
 
     # --- Video ---
     fps: int = 120
-    # Frame dimensions are detected automatically from the video at runtime.
-    # If max_dimension is set, frames are downscaled so their longest side is
-    # at most max_dimension pixels (aspect ratio preserved).  Leave as None to
-    # use the native video resolution.
-    max_dimension: int | None = 256
     temporal_context_sec: float = 2.0       # Seconds of temporal context for GRU
 
     @property
@@ -30,7 +25,7 @@ class Config:
     cnn_channels: list = field(default_factory=lambda: [32, 64, 128, 256])
     gru_hidden: int = 256
     gru_layers: int = 1
-    dropout: float = 0.1
+    dropout: float = 0.3
 
     # --- Training ---
     batch_size: int = 16                    # Number of sequences per batch
@@ -40,7 +35,18 @@ class Config:
     max_epochs: int = 1000
     patience: int = 50                       # Early-stopping patience (epochs)
     val_fraction: float = 0.10              # Fraction of sessions for validation
-    num_workers: int = 4
+    num_workers: int = 0                    # 0 = auto-detect (os.cpu_count())
     seed: int = 42
     grad_accum_steps: int = 4               # Gradient accumulation steps
     use_amp: bool = True                    # Mixed-precision training
+
+    def resolve_num_workers(self, world_size: int = 1) -> int:
+        """Return the actual number of DataLoader workers to use.
+
+        When num_workers == 0 (the default), auto-detect from os.cpu_count()
+        divided by the DDP world size so workers are not over-subscribed.
+        """
+        if self.num_workers > 0:
+            return self.num_workers
+        cpus = os.cpu_count() or 4
+        return max(1, cpus // world_size)

@@ -18,7 +18,7 @@ from sklearn.metrics import (
 from config import Config
 from dataset import (
     SessionChunkDataset, load_labels, split_sessions, find_session_video,
-    get_video_info, compute_output_size, preprocess_frame,
+    get_video_info, preprocess_frame,
 )
 from model import VideoClassifier
 

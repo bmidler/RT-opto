@@ -12,6 +12,7 @@ pickled into DataLoader worker processes (num_workers > 0).
 """
 
 import hashlib
+import multiprocessing as mp
 import os
 import pickle
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -292,12 +293,17 @@ class SessionChunkDataset(Dataset):
                 to_decode[sess] = m
 
         if to_decode:
-            max_workers = min(len(to_decode), os.cpu_count() or 1)
+            # Cap workers to avoid I/O saturation; use spawn context to prevent
+            # fork-safety deadlocks caused by OpenCV's internal mutexes being
+            # inherited in forked child processes (from Phase 1 VideoCapture calls).
+            max_workers = min(len(to_decode), min(4, os.cpu_count() or 1))
             print(f"Decoding {len(to_decode)} video(s) across "
                   f"{max_workers} workers...", flush=True)
 
             futures = {}
-            with ProcessPoolExecutor(max_workers=max_workers) as pool:
+            mp_ctx = mp.get_context("spawn")
+            with ProcessPoolExecutor(max_workers=max_workers,
+                                     mp_context=mp_ctx) as pool:
                 for sess, m in to_decode.items():
                     fut = pool.submit(
                         _decode_worker,

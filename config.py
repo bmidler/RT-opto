@@ -40,13 +40,21 @@ class Config:
     grad_accum_steps: int = 4               # Gradient accumulation steps
     use_amp: bool = True                    # Mixed-precision training
 
+    # Maximum DataLoader workers when auto-detecting. Each worker is a
+    # persistent subprocess that stages full frame chunks in memory; beyond
+    # a small number the RAM cost outweighs any throughput benefit, and on
+    # a many-core node the uncapped value (os.cpu_count()) will exhaust the
+    # job's memory allocation and trigger the OOM killer.
+    max_dataloader_workers: int = 8
+
     def resolve_num_workers(self, world_size: int = 1) -> int:
         """Return the actual number of DataLoader workers to use.
 
-        When num_workers == 0 (the default), auto-detect from os.cpu_count()
-        divided by the DDP world size so workers are not over-subscribed.
+        When num_workers == 0 (the default), auto-detect as the minimum of
+        max_dataloader_workers and (os.cpu_count() / world_size) so that
+        workers are neither over-subscribed nor OOM-killed on many-core nodes.
         """
         if self.num_workers > 0:
-            return self.num_workers
+            return min(self.num_workers, self.max_dataloader_workers)
         cpus = os.cpu_count() or 4
-        return max(1, cpus // world_size)
+        return max(1, min(cpus // world_size, self.max_dataloader_workers))

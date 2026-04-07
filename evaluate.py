@@ -115,7 +115,7 @@ def full_evaluation(cfg: Config):
     val_ds = SessionChunkDataset(val_sessions, labels_dict, cfg.video_root, cfg)
     val_loader = torch.utils.data.DataLoader(
         val_ds, batch_size=cfg.batch_size, shuffle=False,
-        num_workers=cfg.num_workers, pin_memory=True,
+        num_workers=cfg.resolve_num_workers(), pin_memory=True,
     )
 
     all_preds, all_labels = [], []
@@ -199,11 +199,9 @@ def benchmark_latency(cfg: Config, n_warmup: int = 50, n_frames: int = 500):
     _, val_sessions = split_sessions(labels_dict, cfg)
     vid_path = find_session_video(cfg.video_root, val_sessions[0])
 
-    # Detect native frame size and compute output size (respects max_dimension)
+    # Detect native frame size (frames are processed at native resolution)
     _, native_h, native_w = get_video_info(vid_path)
-    out_h, out_w = compute_output_size(native_h, native_w, cfg.max_dimension)
     print(f"  Native frame size:  {native_h}H x {native_w}W")
-    print(f"  Inference frame size: {out_h}H x {out_w}W")
 
     cap = cv2.VideoCapture(str(vid_path))
     if not cap.isOpened():
@@ -220,7 +218,7 @@ def benchmark_latency(cfg: Config, n_warmup: int = 50, n_frames: int = 500):
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             ret, frame = cap.read()
 
-        gray = preprocess_frame(frame, out_h, out_w, native_h, native_w)
+        gray = preprocess_frame(frame)
         tensor = torch.from_numpy(gray).unsqueeze(0).unsqueeze(0).unsqueeze(0).to(device)  # (1,1,1,H,W)
 
         logits, h = model(tensor, h)

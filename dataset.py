@@ -77,9 +77,14 @@ def get_video_info(video_path: str | Path) -> tuple[float, int, int]:
     return fps, h, w
 
 
-def preprocess_frame(frame_bgr: np.ndarray) -> np.ndarray:
-    """BGR frame -> normalised float32 grayscale (native resolution)."""
+def preprocess_frame(frame_bgr: np.ndarray,
+                     spatial_scale: float = 1.0) -> np.ndarray:
+    """BGR frame -> normalised float32 grayscale, optionally downscaled."""
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    if spatial_scale != 1.0:
+        h, w = gray.shape[:2]
+        new_w, new_h = int(w * spatial_scale), int(h * spatial_scale)
+        gray = cv2.resize(gray, (new_w, new_h), interpolation=cv2.INTER_AREA)
     return gray.astype(np.float32) / 255.0
 
 
@@ -87,15 +92,16 @@ def preprocess_frame(frame_bgr: np.ndarray) -> np.ndarray:
 # One-time video -> memmap extraction
 # ---------------------------------------------------------------------------
 
-def _cache_key(video_path: Path) -> str:
+def _cache_key(video_path: Path, spatial_scale: float = 1.0) -> str:
     """Deterministic short hash so we can tell if a cache is still valid."""
-    raw = f"{video_path.resolve()}"
+    raw = f"{video_path.resolve()}:scale={spatial_scale}"
     return hashlib.md5(raw.encode()).hexdigest()[:12]
 
 
-def _mmap_path_for(video_path: Path, cache_dir: Path) -> Path:
+def _mmap_path_for(video_path: Path, cache_dir: Path,
+                   spatial_scale: float = 1.0) -> Path:
     """Return the expected cache file path for a given video."""
-    return cache_dir / f"{_cache_key(video_path)}.npy"
+    return cache_dir / f"{_cache_key(video_path, spatial_scale)}.npy"
 
 
 def _decode_worker(
@@ -105,6 +111,7 @@ def _decode_worker(
     out_h: int,
     out_w: int,
     cache_dir_str: str,
+    spatial_scale: float = 1.0,
 ) -> tuple[str, str, int, int, int]:
     """Worker function for parallel decoding (runs in a subprocess).
 
@@ -115,7 +122,7 @@ def _decode_worker(
     video_path = Path(video_path_str)
     cache_dir = Path(cache_dir_str)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    mmap_path = _mmap_path_for(video_path, cache_dir)
+    mmap_path = _mmap_path_for(video_path, cache_dir, spatial_scale)
 
     if mmap_path.exists():
         return (sess_name, str(mmap_path), n_frames, out_h, out_w)
@@ -131,7 +138,7 @@ def _decode_worker(
         ret, frame = cap.read()
         if not ret:
             break
-        mmap[i] = preprocess_frame(frame)
+        mmap[i] = preprocess_frame(frame, spatial_scale)
 
     mmap.flush()
     del mmap
@@ -181,12 +188,16 @@ def augment_chunk(frames: torch.Tensor) -> torch.Tensor:
 # ---------------------------------------------------------------------------
 
 class VideoFrameReader:
-    """Iterate over grayscale frames of an mp4 at their native resolution."""
+    """Iterate over grayscale frames of an mp4, optionally downscaled."""
 
     def __init__(self, video_path: str | Path, cfg: Config):
         self.path = str(video_path)
-        _, self.native_h, self.native_w = get_video_info(video_path)
-        print(f"    Native HxW: {self.native_h}x{self.native_w}", flush=True)
+        self.spatial_scale = cfg.spatial_scale
+        _, native_h, native_w = get_video_info(video_path)
+        self.out_h = int(native_h * self.spatial_scale)
+        self.out_w = int(native_w * self.spatial_scale)
+        print(f"    Frame HxW: {self.out_h}x{self.out_w} "
+              f"(scale={self.spatial_scale})", flush=True)
 
     def __iter__(self):
         cap = cv2.VideoCapture(self.path)
@@ -197,7 +208,7 @@ class VideoFrameReader:
                 ret, frame = cap.read()
                 if not ret:
                     break
-                yield preprocess_frame(frame)
+                yield preprocess_frame(frame, self.spatial_scale)
         finally:
             cap.release()
 
@@ -269,21 +280,24 @@ class SessionChunkDataset(Dataset):
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         # ---- Phase 1: gather metadata for every session ----
+        scale = cfg.spatial_scale
         print("Resolving session video paths...", flush=True)
         sess_meta: dict[str, dict] = {}
         for sess in sessions:
             vid = find_session_video(video_root, sess)
             _, native_h, native_w = get_video_info(vid)
-            self.frame_sizes[sess] = (native_h, native_w)
+            out_h = int(native_h * scale)
+            out_w = int(native_w * scale)
+            self.frame_sizes[sess] = (out_h, out_w)
 
             n_frames = len(labels_dict[sess])
             sess_meta[sess] = dict(
-                vid=vid, n_frames=n_frames, out_h=native_h, out_w=native_w)
+                vid=vid, n_frames=n_frames, out_h=out_h, out_w=out_w)
 
         # ---- Phase 2: decode videos (parallel, cached on disk) ----
         to_decode: dict[str, dict] = {}
         for sess, m in sess_meta.items():
-            mmap_path = _mmap_path_for(m["vid"], cache_dir)
+            mmap_path = _mmap_path_for(m["vid"], cache_dir, scale)
             if mmap_path.exists():
                 self.mmap_meta[sess] = (
                     str(mmap_path),
@@ -309,7 +323,7 @@ class SessionChunkDataset(Dataset):
                         _decode_worker,
                         str(m["vid"]), sess, m["n_frames"],
                         m["out_h"], m["out_w"],
-                        str(cache_dir),
+                        str(cache_dir), scale,
                     )
                     futures[fut] = sess
 

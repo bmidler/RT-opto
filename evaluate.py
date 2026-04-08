@@ -199,9 +199,10 @@ def benchmark_latency(cfg: Config, n_warmup: int = 50, n_frames: int = 500):
     _, val_sessions = split_sessions(labels_dict, cfg)
     vid_path = find_session_video(cfg.video_root, val_sessions[0])
 
-    # Detect native frame size (frames are processed at native resolution)
     _, native_h, native_w = get_video_info(vid_path)
-    print(f"  Native frame size:  {native_h}H x {native_w}W")
+    out_h = int(native_h * cfg.spatial_scale)
+    out_w = int(native_w * cfg.spatial_scale)
+    print(f"  Frame size: {out_h}H x {out_w}W (scale={cfg.spatial_scale})")
 
     cap = cv2.VideoCapture(str(vid_path))
     if not cap.isOpened():
@@ -218,7 +219,7 @@ def benchmark_latency(cfg: Config, n_warmup: int = 50, n_frames: int = 500):
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             ret, frame = cap.read()
 
-        gray = preprocess_frame(frame)
+        gray = preprocess_frame(frame, cfg.spatial_scale)
         tensor = torch.from_numpy(gray).unsqueeze(0).unsqueeze(0).unsqueeze(0).to(device)  # (1,1,1,H,W)
 
         logits, h = model(tensor, h)

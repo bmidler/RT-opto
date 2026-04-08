@@ -21,6 +21,8 @@ class Config:
         """Number of frames of temporal context."""
         return int(self.fps * self.temporal_context_sec)  # 240
 
+    spatial_scale: float = 0.5             # Downsample factor for video frames
+
     # --- Model ---
     cnn_channels: list = field(default_factory=lambda: [32, 64, 128, 256])
     gru_hidden: int = 256

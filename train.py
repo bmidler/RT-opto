@@ -234,6 +234,7 @@ def train(cfg: Config):
         sampler=train_sampler,
         num_workers=num_workers, pin_memory=True, drop_last=True,
         persistent_workers=num_workers > 0,
+        prefetch_factor=1 if num_workers > 0 else None,
     )
     val_loader = DataLoader(
         val_ds, batch_size=micro_bs,
@@ -241,6 +242,7 @@ def train(cfg: Config):
         sampler=val_sampler,
         num_workers=num_workers, pin_memory=True,
         persistent_workers=num_workers > 0,
+        prefetch_factor=1 if num_workers > 0 else None,
     )
 
     if rank0:

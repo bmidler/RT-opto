@@ -45,7 +45,7 @@ class Config:
     # a small number the RAM cost outweighs any throughput benefit, and on
     # a many-core node the uncapped value (os.cpu_count()) will exhaust the
     # job's memory allocation and trigger the OOM killer.
-    max_dataloader_workers: int = 8
+    max_dataloader_workers: int = 4
 
     def resolve_num_workers(self, world_size: int = 1) -> int:
         """Return the actual number of DataLoader workers to use.

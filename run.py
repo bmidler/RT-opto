@@ -50,6 +50,8 @@ def parse_args():
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--grad_accum_steps", type=int, default=None,
                    help="Gradient accumulation steps (default 4)")
+    p.add_argument("--num_workers", type=int, default=None,
+                   help="DataLoader workers per rank (0 = auto-detect)")
     p.add_argument("--no_amp", action="store_true",
                    help="Disable mixed-precision training")
 
@@ -73,7 +75,7 @@ def main():
 
     for field in ["lr", "batch_size", "max_epochs", "patience",
                   "gru_hidden", "dropout", "seed",
-                  "grad_accum_steps"]:
+                  "grad_accum_steps", "num_workers"]:
         val = getattr(args, field, None)
         if val is not None:
             setattr(cfg, field, val)

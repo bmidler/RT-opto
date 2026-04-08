@@ -114,13 +114,13 @@ def full_evaluation(cfg: Config):
     _, val_sessions = split_sessions(labels_dict, cfg)
     val_ds = SessionChunkDataset(val_sessions, labels_dict, cfg.video_root, cfg)
     val_loader = torch.utils.data.DataLoader(
-        val_ds, batch_size=cfg.batch_size, shuffle=False,
-        num_workers=cfg.resolve_num_workers(), pin_memory=True,
+        val_ds, batch_size=cfg.batch_size // cfg.grad_accum_steps, shuffle=False,
+        num_workers=cfg.resolve_num_workers(), pin_memory=(device.type == "cuda"),
     )
 
     all_preds, all_labels = [], []
     for frames, labels in val_loader:
-        frames = frames.to(device)
+        frames = frames.to(device, non_blocking=True)
         h = model.init_hidden(frames.size(0), device)
         logits, _ = model(frames, h)
         preds = logits.argmax(dim=-1).cpu().numpy().ravel()
@@ -258,8 +258,7 @@ def benchmark_latency(cfg: Config, n_warmup: int = 50, n_frames: int = 500):
     print(f"  Max FPS:    {stats['max_fps']:.1f}")
     print(f"  Budget:     {frame_budget_ms:.2f} ms/frame ({cfg.fps} fps)")
     meets = stats["p95_ms"] < frame_budget_ms
-    print(f"  Meets budget (p95 < {frame_budget_ms:.1f}ms): "
-          f"{'YES' : <4}" if meets else f"  Meets budget (p95 < {frame_budget_ms:.1f}ms): NO")
+    print(f"  Meets budget (p95 < {frame_budget_ms:.1f}ms): {'YES' if meets else 'NO'}")
 
     with open(out / "latency_stats.json", "w") as f:
         json.dump(stats, f, indent=2)

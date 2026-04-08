@@ -14,7 +14,7 @@ class Config:
 
     # --- Video ---
     fps: int = 120
-    temporal_context_sec: float = 2.0       # Seconds of temporal context for GRU
+    temporal_context_sec: float = 1.0       # Seconds of temporal context for GRU
 
     @property
     def seq_len(self) -> int:
@@ -31,7 +31,7 @@ class Config:
 
     # --- Training ---
     batch_size: int = 16                    # Number of sequences per batch
-    chunk_len: int = 240                    # Frames per training chunk (= seq_len)
+    chunk_len: int = 120                    # Frames per training chunk (= seq_len)
     lr: float = 1e-3
     weight_decay: float = 1e-4
     max_epochs: int = 1000
@@ -39,7 +39,7 @@ class Config:
     val_fraction: float = 0.10              # Fraction of sessions for validation
     num_workers: int = 0                    # 0 = auto-detect (os.cpu_count())
     seed: int = 42
-    grad_accum_steps: int = 4               # Gradient accumulation steps
+    grad_accum_steps: int = 2               # Gradient accumulation steps
     use_amp: bool = True                    # Mixed-precision training
 
     # Maximum DataLoader workers when auto-detecting. Each worker is a

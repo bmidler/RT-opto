@@ -88,34 +88,53 @@ def compute_accuracy(logits: torch.Tensor, labels: torch.Tensor) -> float:
 def train_one_epoch(model, loader, optimizer, criterion, device, cfg, scaler):
     model.train()
     total_loss, total_acc, n_chunks = 0.0, 0.0, 0
+    t_data = t_forward = t_backward = t_optim = 0.0
+    rank0 = is_main_process(dist.get_rank() if dist.is_initialized() else 0)
 
     optimizer.zero_grad()
 
     pbar = tqdm(enumerate(loader), total=len(loader),
                 desc="  train", leave=False, unit="batch",
-                disable=not is_main_process(
-                    dist.get_rank() if dist.is_initialized() else 0))
+                disable=not rank0)
 
+    _t = time.perf_counter()
     for step, (frames, labels) in pbar:
+        # --- Data loading time (DataLoader iteration + host→device transfer) ---
+        t_data += time.perf_counter() - _t
         frames = frames.to(device, non_blocking=True)   # (B, T, 1, H, W)
         labels = labels.to(device, non_blocking=True)    # (B, T)
 
         h = _get_raw_model(model).init_hidden(frames.size(0), device)
 
+        # --- Forward pass ---
+        _t = time.perf_counter()
         with torch.autocast(device_type=device.type, enabled=cfg.use_amp):
             logits, _ = model(frames, h)    # (B, T, C)
             loss = criterion(
                 logits.reshape(-1, logits.size(-1)), labels.reshape(-1))
             loss = loss / cfg.grad_accum_steps
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        t_forward += time.perf_counter() - _t
 
+        # --- Backward pass ---
+        _t = time.perf_counter()
         scaler.scale(loss).backward()
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        t_backward += time.perf_counter() - _t
 
+        # --- Optimiser step ---
         if (step + 1) % cfg.grad_accum_steps == 0:
+            _t = time.perf_counter()
             scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            t_optim += time.perf_counter() - _t
 
         batch_loss = loss.item() * cfg.grad_accum_steps
         batch_acc = compute_accuracy(logits, labels)
@@ -126,6 +145,7 @@ def train_one_epoch(model, loader, optimizer, criterion, device, cfg, scaler):
         pbar.set_postfix(loss=f"{batch_loss:.4f}", acc=f"{batch_acc:.4f}")
 
         del frames, labels, logits, loss, h
+        _t = time.perf_counter()  # reset for next iteration's data timing
 
     pbar.close()
 
@@ -137,6 +157,18 @@ def train_one_epoch(model, loader, optimizer, criterion, device, cfg, scaler):
         scaler.step(optimizer)
         scaler.update()
         optimizer.zero_grad()
+
+    if rank0:
+        t_total = t_data + t_forward + t_backward + t_optim
+        if t_total > 0:
+            print(
+                f"  Timing — "
+                f"data: {t_data:.1f}s ({100*t_data/t_total:.0f}%) | "
+                f"forward: {t_forward:.1f}s ({100*t_forward/t_total:.0f}%) | "
+                f"backward: {t_backward:.1f}s ({100*t_backward/t_total:.0f}%) | "
+                f"optim: {t_optim:.1f}s ({100*t_optim/t_total:.0f}%)",
+                flush=True,
+            )
 
     return total_loss / max(n_chunks, 1), total_acc / max(n_chunks, 1)
 
@@ -214,10 +246,15 @@ def train(cfg: Config):
         print(f"Training sessions: {train_sessions}", flush=True)
         print(f"Validation sessions: {val_sessions}", flush=True)
 
+    if rank0:
+        print("Building datasets...", flush=True)
+    t0_ds = time.time()
     train_ds = SessionChunkDataset(
         train_sessions, labels_dict, cfg.video_root, cfg, training=True)
     val_ds = SessionChunkDataset(
         val_sessions, labels_dict, cfg.video_root, cfg, training=False)
+    if rank0:
+        print(f"Datasets ready in {time.time() - t0_ds:.1f}s.", flush=True)
 
     # Resolve number of DataLoader workers
     num_workers = cfg.resolve_num_workers(world_size)

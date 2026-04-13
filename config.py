@@ -13,15 +13,16 @@ class Config:
     model_save_path: str = "output/best_model.pt"
 
     # --- Video ---
-    fps: int = 120
-    temporal_context_sec: float = 1.0       # Seconds of temporal context for GRU
+    fps: int = 120                          # Native fps of recorded videos
+    target_fps: int = 30                    # Processed fps after temporal downsampling
+    temporal_context_sec: float = 2.0       # Seconds of temporal context for GRU
 
     @property
     def seq_len(self) -> int:
-        """Number of frames of temporal context."""
-        return int(self.fps * self.temporal_context_sec)  # 240
+        """Number of frames of temporal context at the processed frame rate."""
+        return int(self.target_fps * self.temporal_context_sec)  # 60
 
-    spatial_scale: float = 0.5             # Downsample factor for video frames
+    spatial_scale: float = 0.35            # Downsample factor for video frames
 
     # --- Model ---
     cnn_channels: list = field(default_factory=lambda: [32, 64, 128, 256])
@@ -31,7 +32,7 @@ class Config:
 
     # --- Training ---
     batch_size: int = 16                    # Number of sequences per batch
-    chunk_len: int = 120                    # Frames per training chunk (= seq_len)
+    chunk_len: int = 60                     # Frames per training chunk (= seq_len)
     lr: float = 1e-3
     weight_decay: float = 1e-4
     max_epochs: int = 1000

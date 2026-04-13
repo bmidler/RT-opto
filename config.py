@@ -14,14 +14,14 @@ class Config:
 
     # --- Video ---
     fps: int = 120
-    temporal_context_sec: float = 0.5       # Seconds of temporal context for GRU
+    temporal_context_sec: float = 1.0       # Seconds of temporal context for GRU
 
     @property
     def seq_len(self) -> int:
         """Number of frames of temporal context."""
-        return int(self.fps * self.temporal_context_sec)  # 60
+        return int(self.fps * self.temporal_context_sec)  # 240
 
-    spatial_scale: float = 0.35             # Downsample factor for video frames
+    spatial_scale: float = 0.5             # Downsample factor for video frames
 
     # --- Model ---
     cnn_channels: list = field(default_factory=lambda: [32, 64, 128, 256])
@@ -30,8 +30,8 @@ class Config:
     dropout: float = 0.3
 
     # --- Training ---
-    batch_size: int = 8                    # Number of sequences per batch
-    chunk_len: int = 60                    # Frames per training chunk (= seq_len)
+    batch_size: int = 16                    # Number of sequences per batch
+    chunk_len: int = 120                    # Frames per training chunk (= seq_len)
     lr: float = 1e-3
     weight_decay: float = 1e-4
     max_epochs: int = 1000

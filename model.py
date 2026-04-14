@@ -65,11 +65,11 @@ class CNNEncoder(nn.Module):
             layers.append(ResBlock(in_c, out_c, stride=2 if in_c != out_c else 1))
             in_c = out_c
 
-        layers.append(nn.AdaptiveAvgPool2d(1))
+        layers.append(nn.AdaptiveAvgPool2d((2, 2)))
         layers.append(nn.Flatten())
         layers.append(nn.Dropout(dropout))
         self.net = nn.Sequential(*layers)
-        self.out_dim = channels[-1] if channels else 32
+        self.out_dim = (channels[-1] if channels else 32) * 4
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x: (B, 1, H, W) → (B, out_dim)"""

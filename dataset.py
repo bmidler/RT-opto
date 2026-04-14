@@ -186,43 +186,6 @@ def _decode_worker(
 
 
 # ---------------------------------------------------------------------------
-# Data augmentation (applied per-chunk during training)
-# ---------------------------------------------------------------------------
-
-def augment_chunk(frames: torch.Tensor) -> torch.Tensor:
-    """Apply random spatial/photometric augmentations to a chunk [T, 1, H, W].
-
-    Spatial transforms are consistent across the temporal chunk so that the
-    GRU sees coherent motion.  Photometric noise is per-frame.
-    """
-    # Random horizontal flip (consistent across chunk)
-    if torch.rand(1).item() < 0.5:
-        frames = frames.flip(-1)
-
-    # Random vertical flip (consistent across chunk)
-    if torch.rand(1).item() < 0.3:
-        frames = frames.flip(-2)
-
-    # Random brightness shift
-    if torch.rand(1).item() < 0.5:
-        delta = (torch.rand(1).item() - 0.5) * 0.3  # [-0.15, +0.15]
-        frames = (frames + delta).clamp_(0.0, 1.0)
-
-    # Random contrast adjustment
-    if torch.rand(1).item() < 0.5:
-        factor = 0.7 + torch.rand(1).item() * 0.6  # [0.7, 1.3]
-        mean = frames.mean()
-        frames = ((frames - mean) * factor + mean).clamp_(0.0, 1.0)
-
-    # Per-frame Gaussian noise
-    if torch.rand(1).item() < 0.3:
-        noise = torch.randn_like(frames) * 0.02
-        frames = (frames + noise).clamp_(0.0, 1.0)
-
-    return frames
-
-
-# ---------------------------------------------------------------------------
 # Video reader (sequential, memory-efficient) — kept for evaluate.py compat
 # ---------------------------------------------------------------------------
 
@@ -315,10 +278,9 @@ class SessionChunkDataset(Dataset):
     """
 
     def __init__(self, sessions: list[str], labels_dict: dict[str, np.ndarray],
-                 video_root: str, cfg: Config, training: bool = False):
+                 video_root: str, cfg: Config):
         self.cfg = cfg
         self.labels_dict = labels_dict
-        self.training = training
 
         # Build an index: list of (session_name, start_frame)
         self.index: list[tuple[str, int]] = []
@@ -482,9 +444,25 @@ class SessionChunkDataset(Dataset):
         frames_t = torch.from_numpy(frames).unsqueeze(1).float() / 255.0
         labels_t = torch.from_numpy(labels).long()
 
-        if self.training:
-            frames_t = augment_chunk(frames_t)
+        return frames_t, labels_t
 
+    def get_session_num_chunks(self, sess: str) -> int:
+        """Number of non-overlapping chunks in *sess* at cfg.chunk_len."""
+        return len(self.subsampled_labels[sess]) // self.cfg.chunk_len
+
+    def get_session_chunk(self, sess: str,
+                          chunk_idx: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return (frames_t, labels_t) for a single chunk without DataLoader.
+
+        frames_t: float32 [chunk_len, 1, H, W]  (values in [0, 1])
+        labels_t: int64   [chunk_len]
+        """
+        start = chunk_idx * self.cfg.chunk_len
+        end = start + self.cfg.chunk_len
+        frames = np.array(self._get_mmap(sess)[start:end])
+        labels = self.subsampled_labels[sess][start:end]
+        frames_t = torch.from_numpy(frames).unsqueeze(1).float() / 255.0
+        labels_t = torch.from_numpy(labels).long()
         return frames_t, labels_t
 
     def __getstate__(self):

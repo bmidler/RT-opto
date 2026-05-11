@@ -1,9 +1,10 @@
 """Post-training evaluation: plots, confusion matrix, per-class metrics,
-and real-time inference latency benchmarking."""
+binarized cluster-group evaluation, and real-time inference latency benchmarking."""
 
 import json
 import time
 from pathlib import Path
+from typing import List, Optional
 
 import cv2
 import numpy as np
@@ -13,6 +14,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sklearn.metrics import (
     classification_report, confusion_matrix, ConfusionMatrixDisplay,
+    roc_auc_score,
 )
 
 from config import Config
@@ -82,11 +84,97 @@ def plot_training_curves(history_path: str, output_dir: str):
 
 
 # ===================================================================
-# 2.  Full validation-set evaluation
+# 2.  Binarized cluster-group evaluation
+# ===================================================================
+
+def binarized_evaluation(
+    all_preds: np.ndarray,
+    all_labels: np.ndarray,
+    cluster_ids: List[int],
+    output_dir: str,
+):
+    """Collapse multi-class predictions into in-group vs. out-of-group and
+    compute binary classification metrics.
+
+    A sample is "positive" when its true label is any cluster in *cluster_ids*;
+    "negative" otherwise. Predictions are binarized the same way, giving the
+    standard 2×2 confusion matrix (TP / FP / FN / TN).
+    """
+    out = Path(output_dir)
+    group = set(cluster_ids)
+
+    y_true = np.array([1 if l in group else 0 for l in all_labels])
+    y_pred = np.array([1 if p in group else 0 for p in all_preds])
+
+    cm = confusion_matrix(y_true, y_pred)
+    # cm[actual][predicted]: [[TN, FP], [FN, TP]]
+    tn, fp, fn, tp = cm.ravel()
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall    = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1        = (2 * precision * recall / (precision + recall)
+                 if (precision + recall) > 0 else 0.0)
+    accuracy  = (tp + tn) / len(y_true)
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    try:
+        auroc = float(roc_auc_score(y_true, y_pred))
+    except ValueError:
+        auroc = float("nan")
+
+    stats = {
+        "cluster_ids": sorted(cluster_ids),
+        "n_samples": int(len(y_true)),
+        "TP": int(tp), "TN": int(tn), "FP": int(fp), "FN": int(fn),
+        "accuracy":    round(accuracy, 4),
+        "precision":   round(precision, 4),
+        "recall":      round(recall, 4),
+        "specificity": round(specificity, 4),
+        "f1":          round(f1, 4),
+        "auroc":       round(auroc, 4),
+    }
+
+    label = f"clusters_{'-'.join(str(c) for c in sorted(cluster_ids))}"
+
+    with open(out / f"binary_eval_{label}.json", "w") as f:
+        json.dump(stats, f, indent=2)
+
+    report_lines = [
+        f"=== Binarized Evaluation — in-group clusters: {sorted(cluster_ids)} ===",
+        f"  Samples      : {stats['n_samples']}",
+        f"  TP / TN / FP / FN : {tp} / {tn} / {fp} / {fn}",
+        f"  Accuracy     : {accuracy:.4f}",
+        f"  Precision    : {precision:.4f}",
+        f"  Recall       : {recall:.4f}",
+        f"  Specificity  : {specificity:.4f}",
+        f"  F1           : {f1:.4f}",
+        f"  AUROC        : {auroc:.4f}",
+    ]
+    report_str = "\n".join(report_lines)
+    print("\n" + report_str)
+    with open(out / f"binary_eval_{label}.txt", "w") as f:
+        f.write(report_str + "\n")
+
+    # 2×2 confusion matrix plot
+    fig, ax = plt.subplots(figsize=(5, 4))
+    disp = ConfusionMatrixDisplay(
+        cm, display_labels=["out-of-group", "in-group"]
+    )
+    disp.plot(ax=ax, cmap="Blues", colorbar=False)
+    ax.set_title(f"Binary Confusion Matrix\nin-group: {sorted(cluster_ids)}")
+    fig.tight_layout()
+    fig.savefig(out / f"binary_confusion_{label}.png", dpi=150)
+    plt.close(fig)
+    print(f"Saved binary confusion matrix → {out / f'binary_confusion_{label}.png'}")
+
+    return stats
+
+
+# ===================================================================
+# 3.  Full validation-set evaluation
 # ===================================================================
 
 @torch.no_grad()
-def full_evaluation(cfg: Config):
+def full_evaluation(cfg: Config, binary_clusters: Optional[List[int]] = None):
     """Load best model, run on all val chunks, produce reports + plots."""
     device = torch.device(
         "cuda" if torch.cuda.is_available()
@@ -162,6 +250,10 @@ def full_evaluation(cfg: Config):
     fig.savefig(out / "per_class_accuracy.png", dpi=150)
     plt.close(fig)
     print(f"Saved per-class accuracy → {out / 'per_class_accuracy.png'}")
+
+    # --- Optional binarized evaluation ---
+    if binary_clusters:
+        binarized_evaluation(all_preds, all_labels, binary_clusters, cfg.output_dir)
 
     return all_preds, all_labels
 

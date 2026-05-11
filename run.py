@@ -55,6 +55,12 @@ def parse_args():
     p.add_argument("--no_amp", action="store_true",
                    help="Disable mixed-precision training")
 
+    # Evaluation
+    p.add_argument("--binary_clusters", type=str, default=None,
+                   help="Comma-separated cluster IDs for binarized evaluation "
+                        "(e.g. '0,3,7'). Predictions are collapsed to "
+                        "in-group vs. out-of-group.")
+
     return p.parse_args()
 
 
@@ -82,6 +88,10 @@ def main():
     if args.no_amp:
         cfg.use_amp = False
 
+    binary_clusters = None
+    if args.binary_clusters:
+        binary_clusters = [int(x.strip()) for x in args.binary_clusters.split(",")]
+
     # --- Plot-only mode ---
     if args.plot_only:
         plot_training_curves(f"{cfg.output_dir}/history.json", cfg.output_dir)
@@ -96,7 +106,7 @@ def main():
     print("\n" + "=" * 60)
     print("POST-TRAINING EVALUATION")
     print("=" * 60)
-    full_evaluation(cfg)
+    full_evaluation(cfg, binary_clusters=binary_clusters)
 
     # --- Latency benchmark ---
     print("\n" + "=" * 60)

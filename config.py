@@ -25,22 +25,22 @@ class Config:
     spatial_scale: float = 0.35            # Downsample factor for video frames
 
     # --- Model ---
-    cnn_channels: list = field(default_factory=lambda: [32, 64, 128, 256, 512, 1024])
-    gru_hidden: int = 128
-    gru_layers: int = 2                     # Was 1, increased to 2.
+    cnn_channels: list = field(default_factory=lambda: [32, 64, 128, 256])
+    gru_hidden: int = 256
+    gru_layers: int = 1
     dropout: float = 0.3
 
     # --- Training ---
     batch_size: int = 16                    # Number of sequences per batch
     chunk_len: int = 30                     # Frames per training chunk (= seq_len)
     lr: float = 1e-3
-    weight_decay: float = 1e-3              # Was 1e-4, but seemed to low.
+    weight_decay: float = 1e-4              # Was 1e-4, but seemed to low.
     max_epochs: int = 1000
-    patience: int = 25                      # Early-stopping patience (epochs)
+    patience: int = 50                      # Early-stopping patience (epochs)
     val_fraction: float = 0.10              # Fraction of sessions for validation
     num_workers: int = 0                    # 0 = auto-detect (os.cpu_count())
     seed: int = 42
-    grad_accum_steps: int = 1               # Gradient accumulation steps
+    grad_accum_steps: int = 2               # Gradient accumulation steps
     use_amp: bool = True                    # Mixed-precision training
 
     # Maximum DataLoader workers when auto-detecting. Each worker is a

@@ -41,8 +41,8 @@ echo ""
 echo ">>> Running Full Pipeline (Train -> Evaluate -> Benchmark) ..."
 python3 run.py \
     --labels states_per_session.pkl \
-    --video_root ../Data/Defeat-Cohorts \
-    --output_dir output-13/ \
+    --video_root ../../Data/Defeat-Cohorts \
+    --output_dir output-9/ \
     --batch_size ${BATCH_SIZE:-64} \
     --num_workers ${NUM_WORKERS:-4}
 

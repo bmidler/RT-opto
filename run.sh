@@ -8,9 +8,9 @@
 #==============================================================================
 
 #SBATCH --job-name=RT-opto-Classifier
-#SBATCH --partition=witten
+#SBATCH --partition=witten,all
 #SBATCH --gpus=1
-#SBATCH -c 128
+#SBATCH -c 32
 #SBATCH --mem=128GB
 #SBATCH --time=72:00:00
 #SBATCH --output=logs/out-%j.txt
@@ -42,9 +42,9 @@ echo ">>> Running Full Pipeline (Train -> Evaluate -> Benchmark) ..."
 python3 run.py \
     --labels states_per_session.pkl \
     --video_root ../Data/Defeat-Cohorts \
-    --output_dir output-4/ \
+    --output_dir output-13/ \
     --batch_size ${BATCH_SIZE:-64} \
-    --num_workers ${NUM_WORKERS:-2}
+    --num_workers ${NUM_WORKERS:-4}
 
 echo ""
 echo "Done."

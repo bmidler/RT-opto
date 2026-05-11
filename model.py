@@ -23,7 +23,7 @@ class ResBlock(nn.Module):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = self.relu = nn.GELU() # nn.ReLU(inplace=True)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn2 = nn.BatchNorm2d(out_channels)
 
@@ -91,6 +91,7 @@ class VideoClassifier(nn.Module):
             dropout=dropout if gru_layers > 1 else 0.0,
         )
         self.head = nn.Linear(gru_hidden, num_classes)
+        self.dropout = nn.Dropout(dropout)  # NOTE: this was added from 8 to 9. Manual dropout.
         self.gru_layers = gru_layers
         self.gru_hidden = gru_hidden
 
@@ -106,15 +107,11 @@ class VideoClassifier(nn.Module):
         """
         B, T, C, H, W = x.shape
 
-        # Reshape to (B*T, C, H, W) — this is a view (no copy) on a
-        # contiguous tensor, much faster than the previous advanced-indexing
-        # chunked approach.
         features = self.encoder(x.reshape(B * T, C, H, W))  # (B*T, feat_dim)
         features = features.reshape(B, T, -1)                # (B, T, feat_dim)
 
-        # Temporal modelling
         gru_out, h_out = self.gru(features, h)           # (B, T, gru_hidden)
-
+        gru_out = self.dropout(gru_out)  # NOTE: this was added from 8 to 9. Apply dropout only during training.
         logits = self.head(gru_out)                      # (B, T, num_classes)
         return logits, h_out
 

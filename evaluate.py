@@ -138,12 +138,12 @@ def full_evaluation(cfg: Config):
         f.write(report)
 
     # --- Confusion matrix ---
-    cm = confusion_matrix(all_labels, all_preds)
+    cm = confusion_matrix(all_labels, all_preds, normalize='true') * 100
     fig, ax = plt.subplots(figsize=(max(8, num_classes * 0.6),
                                      max(8, num_classes * 0.6)))
     disp = ConfusionMatrixDisplay(cm)
-    disp.plot(ax=ax, cmap="Blues", colorbar=True)
-    ax.set_title("Confusion Matrix (Validation Set)")
+    disp.plot(ax=ax, cmap="Blues", colorbar=True, values_format='.1f')
+    ax.set_title("Confusion Matrix (Validation Set %)")
     fig.tight_layout()
     fig.savefig(out / "confusion_matrix.png", dpi=150)
     plt.close(fig)

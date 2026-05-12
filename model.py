@@ -16,31 +16,55 @@ import torch
 import torch.nn as nn
 
 
-class ResBlock(nn.Module):
-    """Simple ResNet block."""
+class LayerNorm2d(nn.Module):
+    """Per-sample layer norm for (B, C, H, W) tensors.
 
-    def __init__(self, in_channels: int, out_channels: int, stride: int = 1):
+    Normalises the C-dimensional feature vector at each spatial position
+    independently.  Has no running statistics — behaviour is identical at
+    train and eval time, making it robust to distribution shift across
+    recording sessions.
+    """
+
+    def __init__(self, num_channels: int, eps: float = 1e-6):
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.norm = nn.LayerNorm(num_channels, eps=eps)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # (B, C, H, W) → (B, H, W, C) → LayerNorm over C → (B, C, H, W)
+        return self.norm(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+
+
+class ResBlock(nn.Module):
+    """Residual block with LayerNorm2d and intra-block dropout."""
+
+    def __init__(self, in_channels: int, out_channels: int,
+                 stride: int = 1, dropout: float = 0.0):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.ln1  = LayerNorm2d(out_channels)
         self.relu = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.drop = nn.Dropout(dropout)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.ln2  = LayerNorm2d(out_channels)
 
         self.downsample = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
             self.downsample = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(out_channels)
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                          stride=stride, bias=False),
+                LayerNorm2d(out_channels),
             )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         identity = self.downsample(x)
         out = self.conv1(x)
-        out = self.bn1(out)
+        out = self.ln1(out)
         out = self.relu(out)
+        out = self.drop(out)          # dropout between the two conv layers
         out = self.conv2(out)
-        out = self.bn2(out)
+        out = self.ln2(out)
         out += identity
         return self.relu(out)
 
@@ -48,28 +72,33 @@ class ResBlock(nn.Module):
 class CNNEncoder(nn.Module):
     """ResNet-style conv stack: grayscale frame → flat feature vector."""
 
-    def __init__(self, channels: list[int], dropout: float = 0.3):
+    def __init__(self, channels: list[int], dropout: float = 0.5):
         super().__init__()
         layers = []
 
         # Initial convolution
-        in_c = channels[0] if channels else 32
+        in_c = channels[0] if channels else 16
         layers += [
             nn.Conv2d(1, in_c, kernel_size=7, stride=2, padding=3, bias=False),
-            nn.BatchNorm2d(in_c),
+            LayerNorm2d(in_c),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
         ]
 
+        # Dropout rate inside residual blocks is half the bottleneck rate to
+        # avoid over-regularising the residual path.
+        block_dropout = dropout * 0.5
         for out_c in channels:
-            layers.append(ResBlock(in_c, out_c, stride=2 if in_c != out_c else 1))
+            layers.append(ResBlock(in_c, out_c,
+                                   stride=2 if in_c != out_c else 1,
+                                   dropout=block_dropout))
             in_c = out_c
 
         layers.append(nn.AdaptiveAvgPool2d((2, 2)))
         layers.append(nn.Flatten())
         layers.append(nn.Dropout(dropout))
         self.net = nn.Sequential(*layers)
-        self.out_dim = (channels[-1] if channels else 32) * 4
+        self.out_dim = (channels[-1] if channels else 16) * 4
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x: (B, 1, H, W) → (B, out_dim)"""

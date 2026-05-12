@@ -201,19 +201,25 @@ def full_evaluation(cfg: Config, binary_clusters: Optional[List[int]] = None):
     labels_dict = load_labels(cfg.labels_pkl)
     _, val_sessions = split_sessions(labels_dict, cfg)
     val_ds = SessionChunkDataset(val_sessions, labels_dict, cfg.video_root, cfg)
-    val_loader = torch.utils.data.DataLoader(
-        val_ds, batch_size=cfg.batch_size // cfg.grad_accum_steps, shuffle=False,
-        num_workers=cfg.resolve_num_workers(), pin_memory=(device.type == "cuda"),
-    )
 
+    # Evaluate each session as a single continuous stream, carrying the GRU
+    # hidden state across chunk boundaries — identical to the deployed setting
+    # and to validate_tbptt used during training.
     all_preds, all_labels = [], []
-    for frames, labels in val_loader:
-        frames = frames.to(device, non_blocking=True)
-        h = model.init_hidden(frames.size(0), device)
-        logits, _ = model(frames, h)
-        preds = logits.argmax(dim=-1).cpu().numpy().ravel()
-        all_preds.append(preds)
-        all_labels.append(labels.numpy().ravel())
+    for sess in sorted(val_sessions):
+        n = val_ds.get_session_num_chunks(sess)
+        if n == 0:
+            continue
+        h = model.init_hidden(1, device)
+        for chunk_idx in range(n):
+            frames, labels = val_ds.get_session_chunk(sess, chunk_idx)
+            frames = frames.unsqueeze(0).to(device, non_blocking=True)
+            with torch.autocast(device_type=device.type, enabled=cfg.use_amp):
+                logits, h = model(frames, h)
+            h = h.detach()
+            preds = logits.argmax(dim=-1).squeeze(0).cpu().numpy().ravel()
+            all_preds.append(preds)
+            all_labels.append(labels.numpy().ravel())
 
     all_preds = np.concatenate(all_preds)
     all_labels = np.concatenate(all_labels)

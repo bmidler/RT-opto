@@ -366,9 +366,9 @@ def train(cfg: Config):
         print("Building datasets...", flush=True)
     t0_ds = time.time()
     train_ds = SessionChunkDataset(
-        train_sessions, labels_dict, cfg.video_root, cfg)
+        train_sessions, labels_dict, cfg.video_root, cfg, augment=True)
     val_ds = SessionChunkDataset(
-        val_sessions, labels_dict, cfg.video_root, cfg)
+        val_sessions, labels_dict, cfg.video_root, cfg, augment=False)
     if rank0:
         print(f"Datasets ready in {time.time() - t0_ds:.1f}s.", flush=True)
         print(f"  Train chunks: {len(train_ds)}, "
@@ -408,7 +408,7 @@ def train(cfg: Config):
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=10
     )
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
     scaler = torch.amp.GradScaler(enabled=cfg.use_amp)
 
     # --- Training loop ---

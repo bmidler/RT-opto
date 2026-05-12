@@ -25,10 +25,10 @@ class Config:
     spatial_scale: float = 0.35            # Downsample factor for video frames
 
     # --- Model ---
-    cnn_channels: list = field(default_factory=lambda: [32, 64, 128, 256])
-    gru_hidden: int = 256
+    cnn_channels: list = field(default_factory=lambda: [16, 32, 64, 128])
+    gru_hidden: int = 128
     gru_layers: int = 1
-    dropout: float = 0.3
+    dropout: float = 0.5
 
     # --- Training ---
     batch_size: int = 16                    # Number of sequences per batch

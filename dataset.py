@@ -278,8 +278,9 @@ class SessionChunkDataset(Dataset):
     """
 
     def __init__(self, sessions: list[str], labels_dict: dict[str, np.ndarray],
-                 video_root: str, cfg: Config):
+                 video_root: str, cfg: Config, augment: bool = False):
         self.cfg = cfg
+        self.augment = augment
         self.labels_dict = labels_dict
 
         # Build an index: list of (session_name, start_frame)
@@ -437,11 +438,37 @@ class SessionChunkDataset(Dataset):
         sess, start = self.index[idx]
         end = start + self.cfg.chunk_len
 
-        # Load uint8 from memmap, normalise to float32 on-the-fly.
-        frames = np.array(self._get_mmap(sess)[start:end])
+        # Load uint8 from memmap and convert to float32 in [0, 1].
+        frames = np.array(self._get_mmap(sess)[start:end]).astype(np.float32) / 255.0
         labels = self.subsampled_labels[sess][start:end]
 
-        frames_t = torch.from_numpy(frames).unsqueeze(1).float() / 255.0
+        if self.augment:
+            # All random parameters are drawn once per chunk so every frame in
+            # the sequence receives the same spatial/photometric transform,
+            # preserving temporal consistency for the GRU.
+
+            # 1. Brightness jitter: scale pixel values uniformly.
+            brightness = np.random.uniform(0.75, 1.25)
+            frames = np.clip(frames * brightness, 0.0, 1.0)
+
+            # 2. Contrast jitter: scale around the chunk mean.
+            contrast = np.random.uniform(0.8, 1.2)
+            chunk_mean = frames.mean()
+            frames = np.clip(chunk_mean + contrast * (frames - chunk_mean), 0.0, 1.0)
+
+            # 3. Horizontal flip (50 % probability).
+            if np.random.rand() < 0.5:
+                frames = frames[:, :, ::-1].copy()
+
+            # 4. Additive Gaussian noise (applied 50 % of the time).
+            if np.random.rand() < 0.5:
+                noise_std = np.random.uniform(0.005, 0.02)
+                frames = np.clip(
+                    frames + np.random.normal(0.0, noise_std, frames.shape).astype(np.float32),
+                    0.0, 1.0,
+                )
+
+        frames_t = torch.from_numpy(frames).unsqueeze(1)   # (T, 1, H, W) float32
         labels_t = torch.from_numpy(labels).long()
 
         return frames_t, labels_t
@@ -478,9 +505,34 @@ class SessionChunkDataset(Dataset):
 # ---------------------------------------------------------------------------
 
 def split_sessions(labels_dict: dict[str, np.ndarray], cfg: Config):
-    """Return (train_sessions, val_sessions) lists."""
+    """Return (train_sessions, val_sessions) using an animal-level holdout.
+
+    Session names are expected in the format 'LABEL-DAY-ANIMAL_ID-CONDITION'
+    (e.g. 'CSDS-Day5-A_5-Defeat').  The animal ID is extracted by splitting on
+    '-' and taking index 2.  All sessions from a held-out animal are assigned
+    to val so that no animal appears in both splits.
+    """
+    from collections import defaultdict
     rng = np.random.RandomState(cfg.seed)
-    sessions = sorted(labels_dict.keys())
-    rng.shuffle(sessions)
-    n_val = max(1, int(len(sessions) * cfg.val_fraction))
-    return sessions[n_val:], sessions[:n_val]
+
+    def _animal(sess: str) -> str:
+        parts = sess.split("-")
+        return parts[2] if len(parts) > 2 else sess
+
+    animal_sessions: dict[str, list[str]] = defaultdict(list)
+    for sess in sorted(labels_dict.keys()):
+        animal_sessions[_animal(sess)].append(sess)
+
+    animals = sorted(animal_sessions.keys())
+    rng.shuffle(animals)
+    n_val = max(1, int(len(animals) * cfg.val_fraction))
+
+    val_animals   = set(animals[:n_val])
+    train_animals = animals[n_val:]
+
+    train_sessions = [s for a in train_animals for s in animal_sessions[a]]
+    val_sessions   = [s for a in val_animals   for s in animal_sessions[a]]
+
+    print(f"  Val animals  : {sorted(val_animals)}", flush=True)
+    print(f"  Train animals: {sorted(set(animals) - val_animals)}", flush=True)
+    return train_sessions, val_sessions

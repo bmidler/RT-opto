@@ -16,55 +16,39 @@ import torch
 import torch.nn as nn
 
 
-class LayerNorm2d(nn.Module):
-    """Per-sample layer norm for (B, C, H, W) tensors.
+class ResBlock(nn.Module):
+    """Residual block with InstanceNorm2d.
 
-    Normalises the C-dimensional feature vector at each spatial position
-    independently.  Has no running statistics — behaviour is identical at
-    train and eval time, making it robust to distribution shift across
-    recording sessions.
+    InstanceNorm2d normalises each channel's spatial map (H×W) independently
+    per sample.  It has no running statistics, so behaviour is identical at
+    train and eval time and is unaffected by session-level appearance shifts.
     """
 
-    def __init__(self, num_channels: int, eps: float = 1e-6):
-        super().__init__()
-        self.norm = nn.LayerNorm(num_channels, eps=eps)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # (B, C, H, W) → (B, H, W, C) → LayerNorm over C → (B, C, H, W)
-        return self.norm(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-
-
-class ResBlock(nn.Module):
-    """Residual block with LayerNorm2d and intra-block dropout."""
-
-    def __init__(self, in_channels: int, out_channels: int,
-                 stride: int = 1, dropout: float = 0.0):
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 1):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
                                stride=stride, padding=1, bias=False)
-        self.ln1  = LayerNorm2d(out_channels)
+        self.in1  = nn.InstanceNorm2d(out_channels, affine=True)
         self.relu = nn.ReLU(inplace=True)
-        self.drop = nn.Dropout(dropout)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
                                stride=1, padding=1, bias=False)
-        self.ln2  = LayerNorm2d(out_channels)
+        self.in2  = nn.InstanceNorm2d(out_channels, affine=True)
 
         self.downsample = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
             self.downsample = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, kernel_size=1,
                           stride=stride, bias=False),
-                LayerNorm2d(out_channels),
+                nn.InstanceNorm2d(out_channels, affine=True),
             )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         identity = self.downsample(x)
         out = self.conv1(x)
-        out = self.ln1(out)
+        out = self.in1(out)
         out = self.relu(out)
-        out = self.drop(out)          # dropout between the two conv layers
         out = self.conv2(out)
-        out = self.ln2(out)
+        out = self.in2(out)
         out += identity
         return self.relu(out)
 
@@ -80,18 +64,14 @@ class CNNEncoder(nn.Module):
         in_c = channels[0] if channels else 16
         layers += [
             nn.Conv2d(1, in_c, kernel_size=7, stride=2, padding=3, bias=False),
-            LayerNorm2d(in_c),
+            nn.InstanceNorm2d(in_c, affine=True),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
         ]
 
-        # Dropout rate inside residual blocks is half the bottleneck rate to
-        # avoid over-regularising the residual path.
-        block_dropout = dropout * 0.5
         for out_c in channels:
             layers.append(ResBlock(in_c, out_c,
-                                   stride=2 if in_c != out_c else 1,
-                                   dropout=block_dropout))
+                                   stride=2 if in_c != out_c else 1))
             in_c = out_c
 
         layers.append(nn.AdaptiveAvgPool2d((2, 2)))
